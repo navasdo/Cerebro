@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import ReactDOM from 'react-dom/client';
 import { initializeApp } from "firebase/app";
 import { 
   getFirestore, 
@@ -32,20 +33,37 @@ import {
 /* FIREBASE SETUP                                                             */
 /* -------------------------------------------------------------------------- */
 
-const firebaseConfig = {
-  apiKey: "AIzaSyDX1r9U_OhfkMRVPg5uMlTBPvVFecXP_uM",
-  authDomain: "cerebro-jpt.firebaseapp.com",
-  projectId: "cerebro-jpt",
-  storageBucket: "cerebro-jpt.firebasestorage.app",
-  messagingSenderId: "931230954566",
-  appId: "1:931230954566:web:c351858462290fcb880647"
-};
+let firebaseConfig;
+let appId = 'default-app-id';
 
-const app = initializeApp(firebaseConfig);
+// 1. Check for Vite Environment Variables (For your Render.com deployment)
+try {
+  // We check for import.meta.env safely
+  if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
+    firebaseConfig = {
+      apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+      appId: import.meta.env.VITE_FIREBASE_APP_ID
+    };
+    appId = import.meta.env.VITE_FIREBASE_APP_ID || 'default-app-id';
+  }
+} catch (e) {
+  // Ignore errors if import.meta is not defined in this environment
+}
+
+// 2. Fallback to Preview Environment (For this chat window)
+if (!firebaseConfig && typeof __firebase_config !== 'undefined') {
+  firebaseConfig = JSON.parse(__firebase_config);
+  if (typeof __app_id !== 'undefined') appId = __app_id;
+}
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig || {});
 const auth = getAuth(app);
 const db = getFirestore(app);
-// Ensure we use the global App ID for permissions
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 /* -------------------------------------------------------------------------- */
 /* UTILITIES                                                                  */
@@ -229,10 +247,10 @@ const TimelineSection = ({ title, issues }) => {
 };
 
 /* -------------------------------------------------------------------------- */
-/* MAIN APP LOGIC                                                             */
+/* MAIN APP                                                                   */
 /* -------------------------------------------------------------------------- */
 
-export default function App() {
+function App() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('home'); 
   const [issues, setIssues] = useState([]); 
@@ -272,7 +290,17 @@ export default function App() {
     
     try {
       // Use the STRICT path required by security rules: /artifacts/{appId}/public/data/{collectionName}
-      const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics'));
+      // If we are on Render (custom keys), this path might need to be 'xmen_comics' at the root
+      // if using your own Firebase. But for this preview, we must use the artifacts path.
+      
+      let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
+      
+      // Heuristic: If we are using custom environment keys, use root collection
+      if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
+         collectionPath = collection(db, 'xmen_comics');
+      }
+
+      const q = query(collectionPath);
       
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const fetchedIssues = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -284,7 +312,7 @@ export default function App() {
         setLoading(false);
       }, (err) => {
         console.error("Firestore error:", err);
-        setErrorMsg("Access Denied: Could not connect to Cerebro database. (Permissions Error)");
+        setErrorMsg("Access Denied: " + err.message);
         setLoading(false);
       });
       
@@ -328,7 +356,14 @@ export default function App() {
 
     setIsProcessingAI(true);
     try {
-      const apiKey = ""; // Runtime provided
+      // Use runtime variable for Gemini Key if available
+      let apiKey = "";
+      try {
+        if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
+            apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+        }
+      } catch (e) {}
+
       const prompt = `
         You are Cerebro. Convert query: "${searchQuery}" to JSON filter.
         Fields: year(num), month(str), text(str).
@@ -376,6 +411,12 @@ export default function App() {
           return;
         }
         setUploadStatus(`Found ${parsedIssues.length} issues. Uploading...`);
+        
+        let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
+        if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
+             collectionPath = collection(db, 'xmen_comics');
+        }
+
         const batchSize = 450;
         const chunks = [];
         for (let i = 0; i < parsedIssues.length; i += batchSize) {
@@ -385,7 +426,7 @@ export default function App() {
         for (const chunk of chunks) {
           const batch = writeBatch(db);
           chunk.forEach(issue => {
-            const docRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics'));
+            const docRef = doc(collectionPath);
             batch.set(docRef, issue);
           });
           await batch.commit();
@@ -409,6 +450,11 @@ export default function App() {
       if(!confirm("Warning: This will wipe Cerebro's memory.")) return;
       setUploadStatus("Clearing timeline...");
       try {
+        let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
+        if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
+             collectionPath = collection(db, 'xmen_comics');
+        }
+
         const batchSize = 400;
         const chunks = [];
         for(let i=0; i<issues.length; i+= batchSize) {
@@ -417,7 +463,7 @@ export default function App() {
         for (const chunk of chunks) {
             const batch = writeBatch(db);
             chunk.forEach(issue => {
-                batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'xmen_comics', issue.id));
+                batch.delete(doc(collectionPath, issue.id));
             });
             await batch.commit();
         }
@@ -625,5 +671,15 @@ export default function App() {
         )}
       </main>
     </div>
+  );
+}
+
+const rootElement = document.getElementById('root');
+if (rootElement) {
+  const root = ReactDOM.createRoot(rootElement);
+  root.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
   );
 }
