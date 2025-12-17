@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { initializeApp } from "firebase/app";
 import { 
   getFirestore, 
@@ -27,6 +27,10 @@ import {
   HelpCircle,
   BookOpen,
   ArrowDown,
+  ArrowUp,
+  Filter,
+  Plus,
+  X,
   Lock
 } from 'lucide-react';
 
@@ -78,6 +82,15 @@ const getMonthIndex = (monthStr) => {
   if (!monthStr) return -1;
   return MONTHS.findIndex(m => m.toLowerCase() === monthStr.toLowerCase());
 };
+
+const SORT_FIELDS = [
+  { key: 'title', label: 'Title', type: 'string' },
+  { key: 'year', label: 'Year', type: 'number' },
+  { key: 'month', label: 'Month', type: 'custom' },
+  { key: 'issueNumber', label: 'Issue #', type: 'number' },
+  { key: 'collection', label: 'Collection', type: 'string' },
+  { key: 'format', label: 'Format', type: 'string' }
+];
 
 // CSV Parsing Logic
 const parseCSV = (text) => {
@@ -356,6 +369,14 @@ export default function XMenApp() {
   const [isProcessingAI, setIsProcessingAI] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
 
+  // Sorting State
+  const [showSortPanel, setShowSortPanel] = useState(false);
+  const [sortLevels, setSortLevels] = useState([
+    { field: 'year', direction: 'asc' },
+    { field: 'month', direction: 'asc' },
+    { field: 'issueNumber', direction: 'asc' }
+  ]);
+
   // Security State
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [passwordError, setPasswordError] = useState('');
@@ -465,16 +486,16 @@ export default function XMenApp() {
     if (!searchQuery.trim()) return;
     const lowerQ = searchQuery.toLowerCase();
     
-    const sortNewest = (list) => {
+    const defaultSort = (list) => {
         return [...list].sort((a, b) => {
-            if (a.year !== b.year) return b.year - a.year;
+            if (a.year !== b.year) return b.year - a.year; // Default Newest First for search
             return getMonthIndex(b.month) - getMonthIndex(a.month);
         });
     };
 
     if (/^\d{4}$/.test(lowerQ)) {
       const year = parseInt(lowerQ);
-      setSearchResults(sortNewest(issues.filter(i => i.year === year)));
+      setSearchResults(defaultSort(issues.filter(i => i.year === year)));
       return;
     }
 
@@ -513,13 +534,67 @@ export default function XMenApp() {
       if (filter.month) results = results.filter(i => i.month.toLowerCase() === filter.month.toLowerCase());
       if (filter.text) results = results.filter(i => i.searchIndex.includes(filter.text.toLowerCase()));
       
-      setSearchResults(sortNewest(results));
+      setSearchResults(defaultSort(results));
     } catch (err) {
-      setSearchResults(sortNewest(issues.filter(i => i.searchIndex.includes(lowerQ))));
+      setSearchResults(defaultSort(issues.filter(i => i.searchIndex.includes(lowerQ))));
     } finally {
       setIsProcessingAI(false);
     }
   };
+
+  // Sort Logic Handlers
+  const addSortLevel = () => {
+    const unusedField = SORT_FIELDS.find(f => !sortLevels.find(l => l.field === f.key));
+    const nextField = unusedField ? unusedField.key : 'title';
+    setSortLevels([...sortLevels, { field: nextField, direction: 'asc' }]);
+  };
+
+  const removeSortLevel = (index) => {
+    const newLevels = [...sortLevels];
+    newLevels.splice(index, 1);
+    setSortLevels(newLevels);
+  };
+
+  const updateSortLevel = (index, key, value) => {
+    const newLevels = [...sortLevels];
+    newLevels[index] = { ...newLevels[index], [key]: value };
+    setSortLevels(newLevels);
+  };
+
+  const clearSorts = () => {
+    setSortLevels([{ field: 'year', direction: 'asc' }]);
+  };
+
+  const sortedSearchResults = useMemo(() => {
+    if (searchResults.length === 0) return [];
+    
+    const data = [...searchResults];
+    if (sortLevels.length === 0) return data;
+
+    return data.sort((a, b) => {
+      for (let level of sortLevels) {
+        let valA = a[level.field];
+        let valB = b[level.field];
+        let comparison = 0;
+
+        if (level.field === 'month') {
+             comparison = getMonthIndex(valA) - getMonthIndex(valB);
+        } else if (level.field === 'issueNumber') {
+             // Robust Issue # Sort: Handles "1, 2, 10" and "12A, 12B"
+             comparison = String(valA).localeCompare(String(valB), undefined, { numeric: true, sensitivity: 'base' });
+        } else if (typeof valA === 'string') {
+             comparison = valA.localeCompare(valB);
+        } else {
+             comparison = valA - valB;
+        }
+
+        if (comparison !== 0) {
+          return level.direction === 'asc' ? comparison : -comparison;
+        }
+      }
+      return 0;
+    });
+  }, [searchResults, sortLevels]);
 
   // Auth & Permissions Handlers
   const handleAuthAction = (action) => {
@@ -718,11 +793,87 @@ export default function XMenApp() {
               </form>
             </div>
 
+            {/* SORT UI PANEL */}
+            {searchResults.length > 0 && (
+              <div className="max-w-3xl mx-auto mb-6">
+                <div className="flex items-center justify-between mb-2">
+                   <div className="text-slate-400 text-sm">
+                      Found {searchResults.length} results
+                   </div>
+                   <button 
+                      onClick={() => setShowSortPanel(!showSortPanel)}
+                      className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-sm transition-all ${showSortPanel ? 'bg-yellow-500 text-black font-bold' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+                   >
+                      <Filter size={16} />
+                      <span>Sort Options</span>
+                      {sortLevels.length > 0 && <span className="bg-slate-900/20 px-1.5 rounded text-xs">{sortLevels.length}</span>}
+                   </button>
+                </div>
+
+                {showSortPanel && (
+                  <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 animate-in fade-in slide-in-from-top-2">
+                    <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-800">
+                      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Multi-Level Sort Order</h3>
+                      <button onClick={clearSorts} className="text-xs text-red-400 hover:text-red-300">Reset to Default</button>
+                    </div>
+                    
+                    <div className="space-y-3">
+                       {sortLevels.map((level, index) => (
+                         <div key={index} className="flex items-center gap-3 p-2 bg-slate-950 rounded border border-slate-800">
+                            <span className="text-slate-500 text-xs w-16 text-right font-mono">
+                               {index === 0 ? "First By" : "Then By"}
+                            </span>
+                            
+                            <select 
+                              value={level.field}
+                              onChange={(e) => updateSortLevel(index, 'field', e.target.value)}
+                              className="bg-slate-900 border border-slate-700 text-white text-sm rounded px-2 py-1 focus:outline-none focus:border-yellow-500"
+                            >
+                               {SORT_FIELDS.map(f => (
+                                 <option key={f.key} value={f.key}>{f.label}</option>
+                               ))}
+                            </select>
+
+                            <div className="flex bg-slate-900 rounded border border-slate-700 p-0.5">
+                                <button 
+                                  onClick={() => updateSortLevel(index, 'direction', 'asc')}
+                                  className={`p-1 rounded ${level.direction === 'asc' ? 'bg-slate-700 text-yellow-500' : 'text-slate-500 hover:text-slate-300'}`}
+                                  title="Ascending"
+                                >
+                                  <ArrowUp size={14} />
+                                </button>
+                                <button 
+                                  onClick={() => updateSortLevel(index, 'direction', 'desc')}
+                                  className={`p-1 rounded ${level.direction === 'desc' ? 'bg-slate-700 text-yellow-500' : 'text-slate-500 hover:text-slate-300'}`}
+                                  title="Descending"
+                                >
+                                  <ArrowDown size={14} />
+                                </button>
+                            </div>
+
+                            <button onClick={() => removeSortLevel(index)} className="ml-auto text-slate-600 hover:text-red-400">
+                               <X size={16} />
+                            </button>
+                         </div>
+                       ))}
+                    </div>
+
+                    <div className="mt-4 text-center">
+                       <button onClick={addSortLevel} className="text-sm text-blue-400 hover:text-blue-300 flex items-center justify-center mx-auto space-x-1">
+                          <Plus size={16} />
+                          <span>Add Sort Level</span>
+                       </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Search Results - Vertical Timeline */}
             {searchResults.length > 0 && (
               <TimelineSection 
-                title={`Search Results (${searchResults.length})`} 
-                issues={searchResults} 
+                title={sortLevels.length > 0 ? "Sorted Search Results" : "Search Results"}
+                issues={sortedSearchResults} 
                 variant="vertical" 
               />
             )}
