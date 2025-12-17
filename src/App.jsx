@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from "firebase/app";
 import { 
   getFirestore, 
@@ -25,7 +25,9 @@ import {
   Sparkles,
   AlertCircle,
   HelpCircle,
-  BookOpen
+  BookOpen,
+  ArrowDown,
+  Lock
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------- */
@@ -37,7 +39,6 @@ let appId = 'default-app-id';
 
 // 1. Check for Vite Environment Variables (For Render.com / Local Deployment)
 try {
-  // We use this check to prevent errors if import.meta is not defined
   if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
     firebaseConfig = {
       apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -54,7 +55,6 @@ try {
 }
 
 // 2. Fallback to Preview Environment (For this chat window)
-// We safely check if __firebase_config is defined before accessing it
 if (!firebaseConfig && typeof __firebase_config !== 'undefined') {
   firebaseConfig = JSON.parse(__firebase_config);
   if (typeof __app_id !== 'undefined') appId = __app_id;
@@ -79,52 +79,35 @@ const getMonthIndex = (monthStr) => {
   return MONTHS.findIndex(m => m.toLowerCase() === monthStr.toLowerCase());
 };
 
-// NEW CSV PARSER for "XMen_master_with_collection_columns.csv"
+// CSV Parsing Logic
 const parseCSV = (text) => {
   const lines = text.split('\n');
   const issues = [];
   
-  // Skip header row (index 0), start at 1
   for (let i = 1; i < lines.length; i++) {
-    // Split by comma, respecting quotes
     const row = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.trim().replace(/^"|"$/g, ''));
 
-    // Expected Columns based on "XMen_master_with_collection_columns.csv":
-    // 0: Title (e.g., "New Mutants")
-    // 1: Volume
-    // 2: Issue Number
-    // 3: Story Title
-    // 4: Release Month
-    // 5: Release Day
-    // 6: Release Year
-    // 7: Cover Date Month
-    // 8: Cover Date Year
-    // 9: Collection Name
-    // 10: Collection Format
-
-    if (row.length < 7) continue; // Basic validation
+    if (row.length < 7) continue; 
 
     const title = row[0];
     const issueNum = row[2];
-    const month = row[4]; // Using Release Month
-    const year = parseInt(row[6]); // Using Release Year
+    const month = row[4]; 
+    const year = parseInt(row[6]); 
     const collectionName = row[9] || "";
     const format = row[10] || "";
 
-    // Skip invalid rows (e.g. empty lines at end of file)
     if (!title || !month || isNaN(year)) continue;
 
     const isUncollected = !collectionName;
 
     issues.push({
-      title: title, // Series Title
+      title: title, 
       month,
       year,
       issueNumber: issueNum,
       collection: isUncollected ? "Uncollected / Single Issue" : collectionName,
       format: isUncollected ? "Not Printed" : (format || "Unknown"),
       isUncollected: isUncollected,
-      // Enhanced Search Index
       searchIndex: `${title} ${month} ${year} ${issueNum} ${collectionName} ${format} ${isUncollected ? 'uncollected missing' : ''}`.toLowerCase()
     });
   }
@@ -146,7 +129,70 @@ const CerebroLoader = () => (
   </div>
 );
 
-const IssueCard = ({ issue }) => {
+const PasswordModal = ({ isOpen, onClose, onConfirm, error }) => {
+  const [input, setInput] = useState('');
+
+  // Reset input when modal opens
+  useEffect(() => {
+    if(isOpen) setInput('');
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+        <div className="flex items-center space-x-3 mb-6 text-white">
+          <div className="p-3 bg-red-500/20 rounded-full text-red-500 border border-red-500/30">
+            <Lock size={24} />
+          </div>
+          <div>
+            <h3 className="text-xl font-bold">Security Clearance</h3>
+            <p className="text-xs text-slate-400">Authorized Personnel Only</p>
+          </div>
+        </div>
+        
+        <p className="text-slate-300 mb-4 text-sm leading-relaxed">
+          Enter the command code to modify the Cerebro database.
+        </p>
+
+        <input 
+          type="password" 
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Access Code"
+          className="w-full bg-slate-950 border border-slate-700 text-white p-3 rounded-xl focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500/50 transition-all mb-4 text-center tracking-widest font-mono"
+          autoFocus
+          onKeyDown={(e) => e.key === 'Enter' && onConfirm(input)}
+        />
+
+        {error && (
+          <div className="flex items-center space-x-2 text-red-400 text-sm mb-4 bg-red-900/20 p-2 rounded-lg border border-red-900/50">
+            <AlertCircle size={16} />
+            <span>{error}</span>
+          </div>
+        )}
+
+        <div className="flex justify-end space-x-3 pt-2">
+          <button 
+            onClick={onClose}
+            className="px-4 py-2 text-slate-400 hover:text-white transition-colors text-sm font-medium"
+          >
+            Cancel
+          </button>
+          <button 
+            onClick={() => onConfirm(input)}
+            className="px-6 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg font-bold transition-all shadow-[0_0_15px_rgba(220,38,38,0.4)] hover:shadow-[0_0_25px_rgba(220,38,38,0.6)]"
+          >
+            Authenticate
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const IssueCard = ({ issue, variant = 'standard' }) => {
   const getFormatStyle = (fmt, isUncollected) => {
     if (isUncollected) return {
       badge: 'bg-red-500/20 text-red-300 border-red-500/50',
@@ -183,6 +229,31 @@ const IssueCard = ({ issue }) => {
   };
 
   const style = getFormatStyle(issue.format, issue.isUncollected);
+  
+  if (variant === 'list') {
+    return (
+      <div className={`group relative w-full flex bg-slate-900 border rounded-lg overflow-hidden transition-all duration-300 ${style.border} ${style.glow} mb-4`}>
+        <div className={`w-2 h-auto bg-gradient-to-b ${style.accent}`}></div>
+        <div className="flex-1 p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex-1">
+             <div className="flex items-center space-x-3 mb-1">
+                <span className="text-slate-400 text-xs font-mono">{issue.month} {issue.year}</span>
+                <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${style.badge}`}>
+                  {issue.format}
+                </span>
+             </div>
+             <h3 className="text-white font-black text-xl">{issue.title} <span className="text-slate-500 font-normal">#{issue.issueNumber}</span></h3>
+             <div className={`text-sm mt-1 ${issue.isUncollected ? 'text-red-300 italic' : 'text-slate-300'}`}>
+                {issue.isUncollected ? 'Uncollected / Single Issue' : `In Collection: ${issue.collection}`}
+             </div>
+          </div>
+          <div className="hidden md:flex items-center justify-center pr-4">
+             <BookOpen className={`${issue.isUncollected ? 'text-red-500' : 'text-slate-600 group-hover:text-yellow-500'} transition-colors`} size={24} />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`group relative flex-shrink-0 w-64 border rounded-lg overflow-hidden transition-all duration-300 ${style.bg} ${style.border} ${style.glow}`}>
@@ -195,14 +266,12 @@ const IssueCard = ({ issue }) => {
           <span className="text-slate-400 text-xs font-mono">{issue.month} {issue.year}</span>
         </div>
         
-        {/* Title Section (Series Name) */}
         <div className="mt-1">
           <h3 className="text-white font-black text-lg leading-tight line-clamp-1">
             {issue.title}
           </h3>
         </div>
 
-        {/* Collection info */}
         <div className={`text-xs mt-1 min-h-[2.5rem] line-clamp-2 ${issue.isUncollected ? 'text-red-300 italic' : 'text-slate-300'}`}>
           {issue.isUncollected ? 'Uncollected' : issue.collection}
         </div>
@@ -235,8 +304,26 @@ const IssueCard = ({ issue }) => {
   );
 };
 
-const TimelineSection = ({ title, issues }) => {
+const TimelineSection = ({ title, issues, variant = 'horizontal' }) => {
   if (issues.length === 0) return null;
+
+  if (variant === 'vertical') {
+    return (
+      <div className="mb-8 animate-in fade-in slide-in-from-bottom-4 duration-700 max-w-3xl mx-auto">
+        <h2 className="text-xl md:text-2xl font-bold text-white mb-6 flex items-center border-b border-slate-800 pb-4">
+          <Sparkles className="mr-3 text-yellow-500" size={24} />
+          {title}
+        </h2>
+        <div className="space-y-2 relative">
+           <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-slate-800 -z-10 hidden md:block"></div>
+           {issues.map((issue, idx) => (
+             <IssueCard key={`${issue.title}-${issue.year}-${issue.month}-${issue.issueNumber}-${idx}`} issue={issue} variant="list" />
+           ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="mb-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <h2 className="text-xl md:text-2xl font-bold text-white mb-4 flex items-center">
@@ -269,6 +356,12 @@ export default function XMenApp() {
   const [isProcessingAI, setIsProcessingAI] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
 
+  // Security State
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+  const [pendingAction, setPendingAction] = useState(null); // 'upload' | 'clear'
+  const fileInputRef = useRef(null);
+
   // Authentication
   useEffect(() => {
     const initAuth = async () => {
@@ -279,13 +372,8 @@ export default function XMenApp() {
           await signInAnonymously(auth);
         }
       } catch (error) {
-        console.error("Auth error (falling back to anonymous):", error);
-        // Fallback to anonymous if the custom token fails (e.g. mismatch)
-        try {
-          await signInAnonymously(auth);
-        } catch (anonErr) {
-          console.error("Anonymous auth also failed:", anonErr);
-        }
+        console.error("Auth error:", error);
+        try { await signInAnonymously(auth); } catch (e) { console.error(e); }
       }
     };
     initAuth();
@@ -300,12 +388,7 @@ export default function XMenApp() {
     setErrorMsg(null);
     
     try {
-      // Determine the collection path based on environment
-      // IF we have a VITE key, we assume we are in "Real/Render" mode and use the root collection 'xmen_comics'
-      // IF we are in Preview mode (no VITE key), we use the /artifacts/... path required by the preview tool
-      
       let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
-      
       try {
         if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
            collectionPath = collection(db, 'xmen_comics');
@@ -336,39 +419,67 @@ export default function XMenApp() {
     }
   }, [user]);
 
-  // Daily Feature
+  // Featured Content Logic
   useEffect(() => {
     if (issues.length === 0) return;
+
     const today = new Date();
     const currentMonthName = MONTHS[today.getMonth()]; 
+    
     const start = new Date(today.getFullYear(), 0, 0);
     const diff = today - start;
     const oneDay = 1000 * 60 * 60 * 24;
     const dayOfYear = Math.floor(diff / oneDay);
+    
     const uniqueYears = [...new Set(issues.map(i => i.year))].sort();
+    
     if (uniqueYears.length > 0) {
-      const yearToFeature = uniqueYears[dayOfYear % uniqueYears.length];
-      setFeaturedYear(yearToFeature);
-      const todaysPicks = issues.filter(i => 
+      let yearToFeature = uniqueYears[dayOfYear % uniqueYears.length];
+      let todaysPicks = issues.filter(i => 
         i.month === currentMonthName && i.year === yearToFeature
       );
+
+      if (todaysPicks.length === 0) {
+         const validYears = uniqueYears.filter(y => 
+            issues.some(i => i.year === y && i.month === currentMonthName)
+         );
+         if (validYears.length > 0) {
+            yearToFeature = validYears[validYears.length - 1]; 
+            todaysPicks = issues.filter(i => 
+               i.month === currentMonthName && i.year === yearToFeature
+            );
+         } else {
+            yearToFeature = uniqueYears[uniqueYears.length - 1];
+            todaysPicks = issues.filter(i => i.year === yearToFeature).slice(0, 10);
+         }
+      }
+
+      setFeaturedYear(yearToFeature);
       setFeaturedIssues(todaysPicks);
     }
   }, [issues]);
 
+  // Search
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
     const lowerQ = searchQuery.toLowerCase();
     
+    const sortNewest = (list) => {
+        return [...list].sort((a, b) => {
+            if (a.year !== b.year) return b.year - a.year;
+            return getMonthIndex(b.month) - getMonthIndex(a.month);
+        });
+    };
+
     if (/^\d{4}$/.test(lowerQ)) {
-      setSearchResults(issues.filter(i => i.year === parseInt(lowerQ)));
+      const year = parseInt(lowerQ);
+      setSearchResults(sortNewest(issues.filter(i => i.year === year)));
       return;
     }
 
     setIsProcessingAI(true);
     try {
-      // Use runtime variable for Gemini Key if available
       let apiKey = "";
       try {
         if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
@@ -401,11 +512,40 @@ export default function XMenApp() {
       if (filter.year) results = results.filter(i => i.year === filter.year);
       if (filter.month) results = results.filter(i => i.month.toLowerCase() === filter.month.toLowerCase());
       if (filter.text) results = results.filter(i => i.searchIndex.includes(filter.text.toLowerCase()));
-      setSearchResults(results);
+      
+      setSearchResults(sortNewest(results));
     } catch (err) {
-      setSearchResults(issues.filter(i => i.searchIndex.includes(lowerQ)));
+      setSearchResults(sortNewest(issues.filter(i => i.searchIndex.includes(lowerQ))));
     } finally {
       setIsProcessingAI(false);
+    }
+  };
+
+  // Auth & Permissions Handlers
+  const handleAuthAction = (action) => {
+    setPendingAction(action);
+    setPasswordError('');
+    setIsPasswordModalOpen(true);
+  };
+
+    
+    // In Production/Render, verify against the secure env variable
+    try {
+        if (import.meta.env && import.meta.env.VITE_DATABASE_PASSWORD) {
+            correctPassword = import.meta.env.VITE_DATABASE_PASSWORD;
+        }
+    } catch(e) {}
+
+    if (input === correctPassword) {
+        setIsPasswordModalOpen(false);
+        if (pendingAction === 'upload') {
+            // Trigger the hidden file input
+            fileInputRef.current?.click();
+        } else if (pendingAction === 'clear') {
+            handleClearDatabase();
+        }
+    } else {
+        setPasswordError("Access Denied: Incorrect Command Code");
     }
   };
 
@@ -420,12 +560,11 @@ export default function XMenApp() {
         const text = event.target.result;
         const parsedIssues = parseCSV(text);
         if (parsedIssues.length === 0) {
-          setUploadStatus("Error: No valid issues found. Ensure CSV has Month/Year columns.");
+          setUploadStatus("Error: No valid issues found. Ensure CSV format is correct.");
           return;
         }
         setUploadStatus(`Found ${parsedIssues.length} issues. Uploading...`);
         
-        // Determine collection path again for upload
         let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
         try {
             if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
@@ -463,10 +602,11 @@ export default function XMenApp() {
   };
 
   const handleClearDatabase = async () => {
-      if(!confirm("Warning: This will wipe Cerebro's memory.")) return;
+      // Double check confirmation even after password
+      if(!confirm("Are you sure? This will wipe all Cerebro data.")) return;
+      
       setUploadStatus("Clearing timeline...");
       try {
-        // Determine collection path again for delete
         let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
         try {
             if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
@@ -500,6 +640,14 @@ export default function XMenApp() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-yellow-500 selection:text-black">
+      
+      <PasswordModal 
+        isOpen={isPasswordModalOpen}
+        onClose={() => setIsPasswordModalOpen(false)}
+        onConfirm={verifyPassword}
+        error={passwordError}
+      />
+
       <header className="sticky top-0 z-50 bg-slate-900/80 backdrop-blur-md border-b border-slate-800">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setActiveTab('home')}>
@@ -538,14 +686,18 @@ export default function XMenApp() {
 
         {activeTab === 'home' && (
           <div className="space-y-12">
+            
+            {/* Hero / Search */}
             <div className="relative py-12 md:py-20 text-center space-y-6">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-900/10 via-slate-950 to-slate-950 pointer-events-none"></div>
+              
               <h1 className="text-4xl md:text-6xl font-black text-white tracking-tight drop-shadow-[0_0_15px_rgba(59,130,246,0.6)]">
                 WELCOME TO CEREBRO
               </h1>
               <p className="text-slate-400 max-w-xl mx-auto text-lg relative z-10">
                 Access the complete timeline of Mutant history.
               </p>
+
               <form onSubmit={handleSearch} className="max-w-2xl mx-auto relative group z-20">
                 <input
                   type="text"
@@ -555,6 +707,7 @@ export default function XMenApp() {
                   className="w-full bg-slate-900/50 border border-slate-700 text-white p-4 pl-12 rounded-2xl shadow-2xl focus:outline-none focus:ring-2 focus:ring-yellow-500/50 focus:border-yellow-500 transition-all text-lg placeholder:text-slate-600"
                 />
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-yellow-500 transition-colors" size={24} />
+                
                 {isProcessingAI && (
                   <div className="absolute right-4 top-1/2 -translate-y-1/2">
                     <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
@@ -563,10 +716,12 @@ export default function XMenApp() {
               </form>
             </div>
 
+            {/* Search Results - Vertical Timeline */}
             {searchResults.length > 0 && (
               <TimelineSection 
                 title={`Search Results (${searchResults.length})`} 
                 issues={searchResults} 
+                variant="vertical" 
               />
             )}
             
@@ -576,11 +731,13 @@ export default function XMenApp() {
                </div>
             )}
 
+            {/* Featured Section (Horizontal) */}
             {issues.length > 0 && !searchQuery && (
               <div className="bg-gradient-to-br from-slate-900 to-slate-900/50 border border-slate-800 rounded-3xl p-6 md:p-10 relative overflow-hidden">
                 <div className="absolute top-0 right-0 p-4 opacity-10">
                   <Calendar size={200} />
                 </div>
+                
                 <div className="relative z-10">
                   <div className="flex flex-col md:flex-row md:items-end justify-between mb-8 gap-4">
                     <div>
@@ -605,18 +762,19 @@ export default function XMenApp() {
                     </div>
                   ) : (
                     <div className="p-8 border border-dashed border-slate-700 rounded-xl text-center text-slate-500">
-                      Cerebro is calibrating temporal scanners... (No issues found for this specific date key)
+                      Cerebro is calibrating temporal scanners... 
                     </div>
                   )}
                 </div>
               </div>
             )}
 
+            {/* Empty State */}
             {issues.length === 0 && !loading && (
               <div className="text-center py-20 space-y-6">
                 <Database size={64} className="mx-auto text-slate-700" />
                 <h3 className="text-2xl font-bold text-white">Database Empty</h3>
-                <p className="text-slate-400">Please upload your X-Men Master CSV to initialize Cerebro.</p>
+                <p className="text-slate-400">Please upload your X-Men Collections CSV to initialize Cerebro.</p>
                 <button 
                   onClick={() => setActiveTab('database')}
                   className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-full font-bold transition-all"
@@ -628,6 +786,7 @@ export default function XMenApp() {
           </div>
         )}
 
+        {/* Database Management Tab */}
         {activeTab === 'database' && (
           <div className="max-w-2xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-8">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8">
@@ -635,6 +794,7 @@ export default function XMenApp() {
                 <Database className="mr-3 text-yellow-500" />
                 Data Management
               </h2>
+
               <div className="bg-blue-900/10 border border-blue-500/20 rounded-lg p-4 mb-6">
                 <div className="flex items-start space-x-3">
                   <HelpCircle className="text-blue-400 flex-shrink-0 mt-0.5" size={20} />
@@ -642,29 +802,42 @@ export default function XMenApp() {
                     <h3 className="text-blue-200 font-bold mb-1">How to use</h3>
                     <p className="text-blue-300/80 text-sm leading-relaxed">
                       1. Export your Excel sheet to <strong>CSV (Comma Delimited)</strong>.<br/>
-                      2. Click the box below to upload.<br/>
-                      3. Cerebro will auto-detect columns: Title, Vol, Issue, Release Month/Year, Collection, Format.
+                      2. Click "Update Database" or "Reset" below.<br/>
+                      3. Enter the security code (Env: VITE_DATABASE_PASSWORD) to proceed.
                     </p>
                   </div>
                 </div>
               </div>
+              
               <div className="space-y-6">
-                <div className="bg-slate-950 p-6 rounded-xl border border-dashed border-slate-700 hover:border-blue-500 transition-colors group">
-                  <label className="flex flex-col items-center cursor-pointer">
+                <div 
+                  onClick={() => handleAuthAction('upload')}
+                  className="bg-slate-950 p-6 rounded-xl border border-dashed border-slate-700 hover:border-blue-500 transition-colors group cursor-pointer"
+                >
+                  <div className="flex flex-col items-center">
                     <Upload className="w-12 h-12 text-slate-600 group-hover:text-blue-500 mb-4 transition-colors" />
-                    <span className="text-lg font-medium text-slate-300">Upload CSV Database</span>
+                    <span className="text-lg font-medium text-slate-300">Update CSV Database</span>
                     <span className="text-sm text-slate-500 mt-2 text-center max-w-xs">
                         Accepts standard CSV with Release Date columns.
                     </span>
-                    <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
-                  </label>
+                    {/* Hidden input, triggered by ref */}
+                    <input 
+                      ref={fileInputRef}
+                      type="file" 
+                      accept=".csv" 
+                      onChange={handleFileUpload} 
+                      className="hidden" 
+                    />
+                  </div>
                 </div>
+
                 {uploadStatus && (
                   <div className="p-4 bg-blue-900/20 border border-blue-500/30 rounded-lg text-blue-200 text-sm font-mono flex items-center">
                     <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse mr-3"></div>
                     {uploadStatus}
                   </div>
                 )}
+                
                 <div className="pt-8 border-t border-slate-800">
                    <div className="flex items-center justify-between">
                        <div>
@@ -674,9 +847,10 @@ export default function XMenApp() {
                        <div className="text-3xl font-mono text-yellow-500">{issues.length}</div>
                    </div>
                 </div>
+                
                  <div className="pt-4">
                     <button 
-                        onClick={handleClearDatabase}
+                        onClick={() => handleAuthAction('clear')}
                         disabled={issues.length === 0}
                         className="w-full flex items-center justify-center space-x-2 p-4 text-red-400 border border-slate-800 hover:bg-red-900/20 hover:border-red-800 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                     >
@@ -688,6 +862,7 @@ export default function XMenApp() {
             </div>
           </div>
         )}
+
       </main>
     </div>
   );
