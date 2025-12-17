@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import ReactDOM from 'react-dom/client';
 import { initializeApp } from "firebase/app";
 import { 
   getFirestore, 
@@ -24,9 +23,9 @@ import {
   Trash2, 
   Layers,
   Sparkles,
+  AlertCircle,
   HelpCircle,
-  BookOpen,
-  AlertCircle
+  BookOpen
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------- */
@@ -36,8 +35,9 @@ import {
 let firebaseConfig;
 let appId = 'default-app-id';
 
-// 1. Check for Vite Environment Variables (For your Render.com deployment)
+// 1. Check for Vite Environment Variables (For Render.com / Local Deployment)
 try {
+  // We use this check to prevent errors if import.meta is not defined
   if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
     firebaseConfig = {
       apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -49,14 +49,18 @@ try {
     };
     appId = import.meta.env.VITE_FIREBASE_APP_ID || 'default-app-id';
   }
-} catch (e) {}
+} catch (e) {
+  // Ignore errors if import.meta is not defined
+}
 
 // 2. Fallback to Preview Environment (For this chat window)
+// We safely check if __firebase_config is defined before accessing it
 if (!firebaseConfig && typeof __firebase_config !== 'undefined') {
   firebaseConfig = JSON.parse(__firebase_config);
   if (typeof __app_id !== 'undefined') appId = __app_id;
 }
 
+// Initialize Firebase
 const app = initializeApp(firebaseConfig || {});
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -85,10 +89,20 @@ const parseCSV = (text) => {
     // Split by comma, respecting quotes
     const row = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.trim().replace(/^"|"$/g, ''));
 
-    // Expected Columns:
-    // 0: Title, 1: Vol, 2: Issue, 3: Story, 4: Rel Month, 5: Rel Day, 6: Rel Year, ... 9: Coll Name, 10: Format
+    // Expected Columns based on "XMen_master_with_collection_columns.csv":
+    // 0: Title (e.g., "New Mutants")
+    // 1: Volume
+    // 2: Issue Number
+    // 3: Story Title
+    // 4: Release Month
+    // 5: Release Day
+    // 6: Release Year
+    // 7: Cover Date Month
+    // 8: Cover Date Year
+    // 9: Collection Name
+    // 10: Collection Format
 
-    if (row.length < 7) continue; 
+    if (row.length < 7) continue; // Basic validation
 
     const title = row[0];
     const issueNum = row[2];
@@ -97,18 +111,20 @@ const parseCSV = (text) => {
     const collectionName = row[9] || "";
     const format = row[10] || "";
 
+    // Skip invalid rows (e.g. empty lines at end of file)
     if (!title || !month || isNaN(year)) continue;
 
     const isUncollected = !collectionName;
 
     issues.push({
-      title: title, 
+      title: title, // Series Title
       month,
       year,
       issueNumber: issueNum,
       collection: isUncollected ? "Uncollected / Single Issue" : collectionName,
       format: isUncollected ? "Not Printed" : (format || "Unknown"),
       isUncollected: isUncollected,
+      // Enhanced Search Index
       searchIndex: `${title} ${month} ${year} ${issueNum} ${collectionName} ${format} ${isUncollected ? 'uncollected missing' : ''}`.toLowerCase()
     });
   }
@@ -179,12 +195,14 @@ const IssueCard = ({ issue }) => {
           <span className="text-slate-400 text-xs font-mono">{issue.month} {issue.year}</span>
         </div>
         
+        {/* Title Section (Series Name) */}
         <div className="mt-1">
           <h3 className="text-white font-black text-lg leading-tight line-clamp-1">
             {issue.title}
           </h3>
         </div>
 
+        {/* Collection info */}
         <div className={`text-xs mt-1 min-h-[2.5rem] line-clamp-2 ${issue.isUncollected ? 'text-red-300 italic' : 'text-slate-300'}`}>
           {issue.isUncollected ? 'Uncollected' : issue.collection}
         </div>
@@ -238,7 +256,7 @@ const TimelineSection = ({ title, issues }) => {
 /* MAIN APP                                                                   */
 /* -------------------------------------------------------------------------- */
 
-function App() {
+export default function XMenApp() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('home'); 
   const [issues, setIssues] = useState([]); 
@@ -251,7 +269,7 @@ function App() {
   const [isProcessingAI, setIsProcessingAI] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
 
-  // Auth
+  // Authentication
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -261,8 +279,13 @@ function App() {
           await signInAnonymously(auth);
         }
       } catch (error) {
-        console.error("Auth error:", error);
-        try { await signInAnonymously(auth); } catch (e) { console.error(e); }
+        console.error("Auth error (falling back to anonymous):", error);
+        // Fallback to anonymous if the custom token fails (e.g. mismatch)
+        try {
+          await signInAnonymously(auth);
+        } catch (anonErr) {
+          console.error("Anonymous auth also failed:", anonErr);
+        }
       }
     };
     initAuth();
@@ -277,6 +300,10 @@ function App() {
     setErrorMsg(null);
     
     try {
+      // Determine the collection path based on environment
+      // IF we have a VITE key, we assume we are in "Real/Render" mode and use the root collection 'xmen_comics'
+      // IF we are in Preview mode (no VITE key), we use the /artifacts/... path required by the preview tool
+      
       let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
       
       try {
@@ -341,6 +368,7 @@ function App() {
 
     setIsProcessingAI(true);
     try {
+      // Use runtime variable for Gemini Key if available
       let apiKey = "";
       try {
         if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
@@ -392,11 +420,12 @@ function App() {
         const text = event.target.result;
         const parsedIssues = parseCSV(text);
         if (parsedIssues.length === 0) {
-          setUploadStatus("Error: No valid issues found. Ensure CSV format is correct.");
+          setUploadStatus("Error: No valid issues found. Ensure CSV has Month/Year columns.");
           return;
         }
         setUploadStatus(`Found ${parsedIssues.length} issues. Uploading...`);
         
+        // Determine collection path again for upload
         let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
         try {
             if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
@@ -437,6 +466,7 @@ function App() {
       if(!confirm("Warning: This will wipe Cerebro's memory.")) return;
       setUploadStatus("Clearing timeline...");
       try {
+        // Determine collection path again for delete
         let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
         try {
             if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
@@ -660,15 +690,5 @@ function App() {
         )}
       </main>
     </div>
-  );
-}
-
-const rootElement = document.getElementById('root');
-if (rootElement) {
-  const root = ReactDOM.createRoot(rootElement);
-  root.render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>
   );
 }
