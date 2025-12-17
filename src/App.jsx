@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from "firebase/app";
 import { 
   getFirestore, 
@@ -23,46 +23,22 @@ import {
   Trash2, 
   Layers,
   Sparkles,
+  AlertCircle,
   HelpCircle,
-  BookOpen,
-  AlertCircle
+  FileQuestion,
+  BookOpen
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------- */
 /* FIREBASE SETUP                                                             */
 /* -------------------------------------------------------------------------- */
 
-let firebaseConfig;
-let appId = 'default-app-id';
-
-// 1. Check for Vite Environment Variables (For your Render.com deployment)
-try {
-  // We check for import.meta.env safely
-  if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
-    firebaseConfig = {
-      apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-      appId: import.meta.env.VITE_FIREBASE_APP_ID
-    };
-    appId = import.meta.env.VITE_FIREBASE_APP_ID || 'default-app-id';
-  }
-} catch (e) {
-  // Ignore errors if import.meta is not defined in this environment
-}
-
-// 2. Fallback to Preview Environment (For this chat window)
-if (!firebaseConfig && typeof __firebase_config !== 'undefined') {
-  firebaseConfig = JSON.parse(__firebase_config);
-  if (typeof __app_id !== 'undefined') appId = __app_id;
-}
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig || {});
+// Use environment config to ensure auth tokens match the project
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 /* -------------------------------------------------------------------------- */
 /* UTILITIES                                                                  */
@@ -78,46 +54,60 @@ const getMonthIndex = (monthStr) => {
   return MONTHS.findIndex(m => m.toLowerCase() === monthStr.toLowerCase());
 };
 
+// IMPROVED CSV PARSING LOGIC v2
 const parseCSV = (text) => {
   const lines = text.split('\n');
   const issues = [];
   
   for (let i = 0; i < lines.length; i++) {
-    // Robust CSV split
+    // Robust CSV split (handles quotes like "X-Men, Vol. 1")
+    // This regex splits by comma ONLY if that comma is not inside quotes
     const row = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.trim().replace(/^"|"$/g, ''));
 
-    // Dynamic Anchor Search for Month/Year
+    // 1. DYNAMIC ANCHOR SEARCH
+    // Instead of assuming Month is at [1], we scan the first 10 columns 
+    // to find a valid Month name followed immediately by a 4-digit Year.
     let monthIndex = -1;
     let foundMonthStr = "";
     
     for (let j = 0; j < 15 && j < row.length - 1; j++) {
       const cell = row[j];
+      // Check if cell matches a month name (case-insensitive)
       const matchMonth = MONTHS.find(m => m.toLowerCase() === cell.toLowerCase());
       
       if (matchMonth) {
+         // Check if next column is a valid Year (e.g. 1963, 2024)
          const potentialYear = parseInt(row[j+1]);
          if (!isNaN(potentialYear) && potentialYear > 1900 && potentialYear < 2100) {
             monthIndex = j;
-            foundMonthStr = matchMonth;
+            foundMonthStr = matchMonth; // Use the clean Title Case month name
             break;
          }
       }
     }
 
+    // If we didn't find a Month/Year anchor, skip this row (it's likely a header or empty)
     if (monthIndex === -1) continue;
 
     const month = foundMonthStr;
     const year = parseInt(row[monthIndex + 1]);
 
-    // Scan for issues
+    // 2. SCAN FOR ISSUES (Starting after the Year column)
+    // We iterate through the rest of the row looking for data.
+    // The pattern is: [Issue] [Collection] [Format] ... but with possible empty spacer columns.
+    
     let col = monthIndex + 2;
     
     while (col < row.length) {
       const val = row[col];
       
+      // If we find a value in a column, we assume it's an Issue Number
       if (val) {
+        // Look ahead for Collection and Format
         const collectionName = row[col + 1] || "";
         const format = row[col + 2] || "";
+        
+        // LOGIC: If issue exists but Collection is empty -> It's "Uncollected"
         const isUncollected = !collectionName;
         
         issues.push({
@@ -127,11 +117,15 @@ const parseCSV = (text) => {
           collection: isUncollected ? "Uncollected / Single Issue" : collectionName,
           format: isUncollected ? "Not Printed" : (format || "Unknown"),
           isUncollected: isUncollected,
+          // Searchable text blob
           searchIndex: `${month} ${year} ${val} ${collectionName || ''} ${format || ''} ${isUncollected ? 'uncollected missing' : ''}`.toLowerCase()
         });
         
+        // We successfully processed a triplet (Issue, Coll, Fmt). 
+        // Move ahead by 3 to skip the Collection and Format columns we just read.
         col += 3;
       } else {
+        // If this cell is empty, it might be a spacer column. Just move to the next one.
         col++;
       }
     }
@@ -155,6 +149,7 @@ const CerebroLoader = () => (
 );
 
 const IssueCard = ({ issue }) => {
+  // Dynamic styling based on Format
   const getFormatStyle = (fmt, isUncollected) => {
     if (isUncollected) return {
       badge: 'bg-red-500/20 text-red-300 border-red-500/50',
@@ -181,6 +176,7 @@ const IssueCard = ({ issue }) => {
       bg: 'bg-slate-900'
     };
     
+    // Default TPB etc
     return {
       badge: 'bg-green-600 text-white border-green-400',
       border: 'border-slate-700 hover:border-green-400',
@@ -194,7 +190,9 @@ const IssueCard = ({ issue }) => {
 
   return (
     <div className={`group relative flex-shrink-0 w-64 border rounded-lg overflow-hidden transition-all duration-300 ${style.bg} ${style.border} ${style.glow}`}>
+      {/* Top Accent Bar */}
       <div className={`absolute top-0 left-0 w-full h-1 bg-gradient-to-r ${style.accent}`}></div>
+      
       <div className="p-4 space-y-2 h-full flex flex-col">
         <div className="flex justify-between items-start">
           <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${style.badge}`}>
@@ -202,9 +200,11 @@ const IssueCard = ({ issue }) => {
           </span>
           <span className="text-slate-400 text-xs font-mono">{issue.month} {issue.year}</span>
         </div>
+        
         <h3 className={`font-bold leading-tight line-clamp-2 min-h-[3rem] ${issue.isUncollected ? 'text-red-300 italic' : 'text-white'}`}>
           {issue.collection}
         </h3>
+        
         <div className="mt-auto pt-2 flex items-center space-x-2">
           <div className={`h-8 w-8 rounded-full bg-slate-800 flex items-center justify-center border text-sm font-bold ${issue.isUncollected ? 'border-red-500/50 text-red-400' : 'border-slate-600 text-yellow-500'}`}>
             #{issue.issueNumber}
@@ -214,6 +214,8 @@ const IssueCard = ({ issue }) => {
           </span>
         </div>
       </div>
+      
+      {/* Hover Overlay */}
       <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-4 text-center z-10">
         <div>
           <BookOpen className={`mx-auto mb-2 ${issue.isUncollected ? 'text-red-400' : 'text-yellow-500'}`} size={24} />
@@ -230,6 +232,7 @@ const IssueCard = ({ issue }) => {
 
 const TimelineSection = ({ title, issues }) => {
   if (issues.length === 0) return null;
+
   return (
     <div className="mb-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <h2 className="text-xl md:text-2xl font-bold text-white mb-4 flex items-center">
@@ -249,12 +252,11 @@ const TimelineSection = ({ title, issues }) => {
 /* MAIN APP                                                                   */
 /* -------------------------------------------------------------------------- */
 
-function App() {
+export default function XMenApp() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('home'); 
   const [issues, setIssues] = useState([]); 
   const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [featuredIssues, setFeaturedIssues] = useState([]);
@@ -262,7 +264,7 @@ function App() {
   const [isProcessingAI, setIsProcessingAI] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
 
-  // Auth
+  // Authentication
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -273,7 +275,12 @@ function App() {
         }
       } catch (error) {
         console.error("Auth error (falling back to anonymous):", error);
-        try { await signInAnonymously(auth); } catch (e) { console.error(e); }
+        // Fallback to anonymous if the custom token fails (e.g. mismatch)
+        try {
+          await signInAnonymously(auth);
+        } catch (anonErr) {
+          console.error("Anonymous auth also failed:", anonErr);
+        }
       }
     };
     initAuth();
@@ -281,58 +288,47 @@ function App() {
     return () => unsubscribe();
   }, []);
 
-  // Data
+  // Data Fetching
   useEffect(() => {
     if (!user) return;
-    setLoading(true);
-    setErrorMsg(null);
     
-    try {
-      // Use the STRICT path required by security rules: /artifacts/{appId}/public/data/{collectionName}
-      // If we are on Render (custom keys), this path might need to be 'xmen_comics' at the root
-      // if using your own Firebase. But for this preview, we must use the artifacts path.
+    setLoading(true);
+    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics'));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const fetchedIssues = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       
-      let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
-      
-      // Heuristic: If we are using custom environment keys, use root collection
-      if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
-         collectionPath = collection(db, 'xmen_comics');
-      }
-
-      const q = query(collectionPath);
-      
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const fetchedIssues = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        fetchedIssues.sort((a, b) => {
-          if (a.year !== b.year) return a.year - b.year;
-          return getMonthIndex(a.month) - getMonthIndex(b.month);
-        });
-        setIssues(fetchedIssues);
-        setLoading(false);
-      }, (err) => {
-        console.error("Firestore error:", err);
-        setErrorMsg("Access Denied: " + err.message);
-        setLoading(false);
+      // Sort: Year ASC, then Month Index ASC
+      fetchedIssues.sort((a, b) => {
+        if (a.year !== b.year) return a.year - b.year;
+        return getMonthIndex(a.month) - getMonthIndex(b.month);
       });
       
-      return () => unsubscribe();
-    } catch (err) {
-      console.error("Query setup error:", err);
-      setErrorMsg("System Error: " + err.message);
+      setIssues(fetchedIssues);
       setLoading(false);
-    }
+    }, (err) => {
+      console.error("Firestore error:", err);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
   }, [user]);
 
-  // Daily Feature
+  // Featured Content Logic
   useEffect(() => {
     if (issues.length === 0) return;
+
     const today = new Date();
     const currentMonthName = MONTHS[today.getMonth()]; 
+    
+    // Pick a year based on day-of-year rotation
     const start = new Date(today.getFullYear(), 0, 0);
     const diff = today - start;
     const oneDay = 1000 * 60 * 60 * 24;
     const dayOfYear = Math.floor(diff / oneDay);
+    
     const uniqueYears = [...new Set(issues.map(i => i.year))].sort();
+    
     if (uniqueYears.length > 0) {
       const yearToFeature = uniqueYears[dayOfYear % uniqueYears.length];
       setFeaturedYear(yearToFeature);
@@ -343,25 +339,31 @@ function App() {
     }
   }, [issues]);
 
+  // Search Logic
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
+
     const lowerQ = searchQuery.toLowerCase();
     
+    // Direct Year Search
     if (/^\d{4}$/.test(lowerQ)) {
       setSearchResults(issues.filter(i => i.year === parseInt(lowerQ)));
       return;
     }
 
+    // AI Processing
     setIsProcessingAI(true);
     try {
-      // Use runtime variable for Gemini Key if available
       let apiKey = "";
       try {
+        // Automatically check for the Vite env variable
         if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
             apiKey = import.meta.env.VITE_GEMINI_API_KEY;
         }
-      } catch (e) {}
+      } catch (e) {
+        // Environment variables not supported in this preview mode
+      }
 
       const prompt = `
         You are Cerebro. Convert query: "${searchQuery}" to JSON filter.
@@ -387,17 +389,21 @@ function App() {
       if (filter.year) results = results.filter(i => i.year === filter.year);
       if (filter.month) results = results.filter(i => i.month.toLowerCase() === filter.month.toLowerCase());
       if (filter.text) results = results.filter(i => i.searchIndex.includes(filter.text.toLowerCase()));
+
       setSearchResults(results);
     } catch (err) {
+      // Fallback
       setSearchResults(issues.filter(i => i.searchIndex.includes(lowerQ)));
     } finally {
       setIsProcessingAI(false);
     }
   };
 
+  // CSV Upload Handler
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+
     setUploadStatus("Reading file...");
     const reader = new FileReader();
     reader.onload = async (event) => {
@@ -405,41 +411,42 @@ function App() {
         setUploadStatus("Scanning for timeline data...");
         const text = event.target.result;
         const parsedIssues = parseCSV(text);
+        
         if (parsedIssues.length === 0) {
-          setUploadStatus("Error: No valid issues found. Ensure CSV has Month/Year columns.");
+          setUploadStatus("Error: No valid issues found. Ensure CSV has Month/Year columns somewhere in the row.");
           return;
         }
-        setUploadStatus(`Found ${parsedIssues.length} issues. Uploading...`);
-        
-        let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
-        if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
-             collectionPath = collection(db, 'xmen_comics');
-        }
 
+        setUploadStatus(`Found ${parsedIssues.length} issues (including uncollected). Uploading...`);
+        
+        // Batch upload
         const batchSize = 450;
         const chunks = [];
         for (let i = 0; i < parsedIssues.length; i += batchSize) {
           chunks.push(parsedIssues.slice(i, i + batchSize));
         }
+
         let count = 0;
         for (const chunk of chunks) {
           const batch = writeBatch(db);
           chunk.forEach(issue => {
-            const docRef = doc(collectionPath);
+            const docRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics'));
             batch.set(docRef, issue);
           });
           await batch.commit();
           count += chunk.length;
           setUploadStatus(`Uploaded ${count} / ${parsedIssues.length}...`);
         }
+
         setUploadStatus("Database Synced Successfully.");
         setTimeout(() => {
             setUploadStatus(null);
             setActiveTab('home');
         }, 1500);
+
       } catch (err) {
         console.error(err);
-        setUploadStatus("Error processing file: " + err.message);
+        setUploadStatus("Error processing file. Please ensure it is a valid CSV.");
       }
     };
     reader.readAsText(file);
@@ -448,29 +455,25 @@ function App() {
   const handleClearDatabase = async () => {
       if(!confirm("Warning: This will wipe Cerebro's memory.")) return;
       setUploadStatus("Clearing timeline...");
-      try {
-        let collectionPath = collection(db, 'artifacts', appId, 'public', 'data', 'xmen_comics');
-        if (import.meta.env && import.meta.env.VITE_FIREBASE_API_KEY) {
-             collectionPath = collection(db, 'xmen_comics');
-        }
-
-        const batchSize = 400;
-        const chunks = [];
-        for(let i=0; i<issues.length; i+= batchSize) {
-            chunks.push(issues.slice(i, i+batchSize));
-        }
-        for (const chunk of chunks) {
-            const batch = writeBatch(db);
-            chunk.forEach(issue => {
-                batch.delete(doc(collectionPath, issue.id));
-            });
-            await batch.commit();
-        }
-        setUploadStatus("Timeline reset.");
-      } catch (err) {
-        setUploadStatus("Delete failed: " + err.message);
+      const batchSize = 400;
+      const chunks = [];
+      for(let i=0; i<issues.length; i+= batchSize) {
+          chunks.push(issues.slice(i, i+batchSize));
       }
+
+      for (const chunk of chunks) {
+          const batch = writeBatch(db);
+          chunk.forEach(issue => {
+              batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'xmen_comics', issue.id));
+          });
+          await batch.commit();
+      }
+      setUploadStatus("Timeline reset.");
   }
+
+  /* -------------------------------------------------------------------------- */
+  /* RENDER UI                                                                  */
+  /* -------------------------------------------------------------------------- */
 
   if (loading) return (
     <div className="min-h-screen bg-slate-950 flex items-center justify-center">
@@ -480,6 +483,8 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-yellow-500 selection:text-black">
+      
+      {/* Header */}
       <header className="sticky top-0 z-50 bg-slate-900/80 backdrop-blur-md border-b border-slate-800">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setActiveTab('home')}>
@@ -488,6 +493,7 @@ function App() {
             </div>
             <span className="text-xl font-bold tracking-wider text-white">CEREBRO</span>
           </div>
+
           <nav className="flex items-center space-x-1">
             <button 
               onClick={() => setActiveTab('home')}
@@ -507,25 +513,23 @@ function App() {
         </div>
       </header>
 
+      {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 py-8">
         
-        {errorMsg && (
-          <div className="mb-6 p-4 bg-red-900/50 border border-red-500/50 rounded-xl flex items-center space-x-3 text-red-200">
-             <AlertCircle className="flex-shrink-0" />
-             <span>{errorMsg}</span>
-          </div>
-        )}
-
         {activeTab === 'home' && (
           <div className="space-y-12">
+            
+            {/* Hero */}
             <div className="relative py-12 md:py-20 text-center space-y-6">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-900/10 via-slate-950 to-slate-950 pointer-events-none"></div>
+              
               <h1 className="text-4xl md:text-6xl font-black text-white tracking-tight drop-shadow-[0_0_15px_rgba(59,130,246,0.6)]">
                 WELCOME TO CEREBRO
               </h1>
               <p className="text-slate-400 max-w-xl mx-auto text-lg relative z-10">
                 Access the complete timeline of Mutant history.
               </p>
+
               <form onSubmit={handleSearch} className="max-w-2xl mx-auto relative group z-20">
                 <input
                   type="text"
@@ -535,6 +539,7 @@ function App() {
                   className="w-full bg-slate-900/50 border border-slate-700 text-white p-4 pl-12 rounded-2xl shadow-2xl focus:outline-none focus:ring-2 focus:ring-yellow-500/50 focus:border-yellow-500 transition-all text-lg placeholder:text-slate-600"
                 />
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-yellow-500 transition-colors" size={24} />
+                
                 {isProcessingAI && (
                   <div className="absolute right-4 top-1/2 -translate-y-1/2">
                     <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
@@ -543,6 +548,7 @@ function App() {
               </form>
             </div>
 
+            {/* Search Results */}
             {searchResults.length > 0 && (
               <TimelineSection 
                 title={`Search Results (${searchResults.length})`} 
@@ -556,11 +562,13 @@ function App() {
                </div>
             )}
 
+            {/* Featured Section */}
             {issues.length > 0 && !searchQuery && (
               <div className="bg-gradient-to-br from-slate-900 to-slate-900/50 border border-slate-800 rounded-3xl p-6 md:p-10 relative overflow-hidden">
                 <div className="absolute top-0 right-0 p-4 opacity-10">
                   <Calendar size={200} />
                 </div>
+                
                 <div className="relative z-10">
                   <div className="flex flex-col md:flex-row md:items-end justify-between mb-8 gap-4">
                     <div>
@@ -592,6 +600,7 @@ function App() {
               </div>
             )}
 
+            {/* Empty State */}
             {issues.length === 0 && !loading && (
               <div className="text-center py-20 space-y-6">
                 <Database size={64} className="mx-auto text-slate-700" />
@@ -608,6 +617,7 @@ function App() {
           </div>
         )}
 
+        {/* Database Management Tab */}
         {activeTab === 'database' && (
           <div className="max-w-2xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-8">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8">
@@ -615,6 +625,8 @@ function App() {
                 <Database className="mr-3 text-yellow-500" />
                 Data Management
               </h2>
+
+              {/* Instructions */}
               <div className="bg-blue-900/10 border border-blue-500/20 rounded-lg p-4 mb-6">
                 <div className="flex items-start space-x-3">
                   <HelpCircle className="text-blue-400 flex-shrink-0 mt-0.5" size={20} />
@@ -628,6 +640,7 @@ function App() {
                   </div>
                 </div>
               </div>
+              
               <div className="space-y-6">
                 <div className="bg-slate-950 p-6 rounded-xl border border-dashed border-slate-700 hover:border-blue-500 transition-colors group">
                   <label className="flex flex-col items-center cursor-pointer">
@@ -639,12 +652,14 @@ function App() {
                     <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
                   </label>
                 </div>
+
                 {uploadStatus && (
                   <div className="p-4 bg-blue-900/20 border border-blue-500/30 rounded-lg text-blue-200 text-sm font-mono flex items-center">
                     <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse mr-3"></div>
                     {uploadStatus}
                   </div>
                 )}
+                
                 <div className="pt-8 border-t border-slate-800">
                    <div className="flex items-center justify-between">
                        <div>
@@ -654,6 +669,7 @@ function App() {
                        <div className="text-3xl font-mono text-yellow-500">{issues.length}</div>
                    </div>
                 </div>
+                
                  <div className="pt-4">
                     <button 
                         onClick={handleClearDatabase}
@@ -668,9 +684,8 @@ function App() {
             </div>
           </div>
         )}
+
       </main>
     </div>
   );
 }
-
-export default App;
